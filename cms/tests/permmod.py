@@ -1041,19 +1041,19 @@ class ViewPermissionTests(SettingsOverrideTestCase):
         self.assertEqual([u'page 6', u'page 6'], [x.page.get_title() for x in PagePermission.objects.for_page(page4)])
 
         # handle the two other descendent oriented choices.
-        pa.grant_on = ACCESS_DESCENDANTS
-        pa.save()
-        pc.grant_on = ACCESS_CHILDREN
-        pc.save()
+        perm_a.grant_on = ACCESS_DESCENDANTS
+        perm_a.save()
+        perm_b.grant_on = ACCESS_CHILDREN
+        perm_b.save()
         # Same as previous asserts.
         self.assertEqual(PagePermission.objects.for_page(page6).count(), 2)
         self.assertEqual(PagePermission.objects.for_page(page4).count(), 0)
 
         # the final one. The only one that works correctly is specifically current page only.
-        pa.grant_on = ACCESS_PAGE
-        pa.save()
-        pc.grant_on = ACCESS_PAGE
-        pc.save()
+        perm_a.grant_on = ACCESS_PAGE
+        perm_a.save()
+        perm_b.grant_on = ACCESS_PAGE
+        perm_b.save()
         # is now correct.
         self.assertEqual(PagePermission.objects.for_page(page6).count(), 2)
         self.assertEqual(PagePermission.objects.for_page(page4).count(), 0)
