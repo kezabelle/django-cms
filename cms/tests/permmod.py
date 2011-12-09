@@ -3,8 +3,8 @@ from __future__ import with_statement
 from cms.api import (create_page, publish_page, approve_page, add_plugin, 
     create_page_user, assign_user_to_page)
 from cms.models import Page, CMSPlugin
-from cms.models.moderatormodels import (ACCESS_DESCENDANTS, 
-    ACCESS_PAGE_AND_DESCENDANTS)
+from cms.models.moderatormodels import (ACCESS_DESCENDANTS, ACCESS_PAGE,
+    ACCESS_CHILDREN, ACCESS_PAGE_AND_CHILDREN, ACCESS_PAGE_AND_DESCENDANTS)
 from cms.models.permissionmodels import PagePermission, GlobalPagePermission
 from cms.test_utils.testcases import (URL_CMS_PAGE_ADD, URL_CMS_PLUGIN_REMOVE, 
     SettingsOverrideTestCase, URL_CMS_PLUGIN_ADD, CMSTestCase)
@@ -923,7 +923,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
                 content type lookup by permission lookup
                 """
                 page.has_view_permission(request)
-    
+
     def test_authed_no_access(self):
         with SettingsOverride(CMS_PUBLIC_FOR='staff'):
             user = User.objects.create_user('user', 'user@domain.com', 'user')
@@ -933,7 +933,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
             page.level = 0
             page.tree_id = 1
             self.assertFalse(page.has_view_permission(request))
-    
+
     def test_unauthed_no_access(self):
         with SettingsOverride(CMS_PUBLIC_FOR='staff'):
             request = self.get_request()
@@ -942,7 +942,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
             page.level = 0
             page.tree_id = 1
             self.assertFalse(page.has_view_permission(request))
-        
+
     def test_unauthed_no_access_num_queries(self):
         site = Site()
         site.pk = 1
@@ -953,7 +953,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
         page.tree_id = 1
         with self.assertNumQueries(1):
             page.has_view_permission(request)
-    
+
     def test_page_permissions(self):
         with SettingsOverride(CMS_PUBLIC_FOR='staff'):
             user = User.objects.create_user('user', 'user@domain.com', 'user')
@@ -961,7 +961,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
             page = create_page('A', 'nav_playground.html', 'en')
             PagePermission.objects.create(can_view=True, user=user, page=page)
             self.assertTrue(page.has_view_permission(request))
-    
+
     def test_page_permissions_view_groups(self):
         with SettingsOverride(CMS_PUBLIC_FOR='staff'):
             user = User.objects.create_user('user', 'user@domain.com', 'user')
@@ -971,7 +971,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
             page = create_page('A', 'nav_playground.html', 'en')
             PagePermission.objects.create(can_view=True, group=group, page=page)
             self.assertTrue(page.has_view_permission(request))
-            
+
     def test_global_permission(self):
         with SettingsOverride(CMS_PUBLIC_FOR='staff'):
             user = User.objects.create_user('user', 'user@domain.com', 'user')
@@ -982,3 +982,78 @@ class ViewPermissionTests(SettingsOverrideTestCase):
             page.level = 0
             page.tree_id = 1
             self.assertTrue(page.has_view_permission(request))
+
+    def test_view_permissions_inheritance(self):
+        ''' Demonstrate that a page cannot inherit from a parent's siblings. '''
+        template = "nav_playground.html"
+        language = 'en'
+        groups = []
+        users = []
+
+        for g in ['A', 'B', 'C']:
+            new_group, _ = Group.objects.get_or_create(name=g)
+            new_user, _ = User.objects.get_or_create(username=g.lower())
+            new_user.set_password(g.lower())
+            new_user.groups.add(new_group)
+            new_user.save()
+            groups.append(new_group)
+            users.append(new_user)
+
+        # Create the following cms.models.pagemodel.Page structure.
+        # page 1
+        #    page 2
+        #        page 3
+        #            page 4 <-- We're going to find we have permissions here.
+        #    page 5
+        #        page 6 <-- We'll add our permissions to this.
+        page1 = create_page("page 1", template, language, published=True, in_navigation=True)
+        page2 = create_page("page 2", template, language, published=True, in_navigation=True, parent=page1)
+        page3 = create_page("page 3", template, language, published=True, in_navigation=True, parent=page2)
+        page4 = create_page("page 4", template, language, published=True, in_navigation=True, parent=page3)
+        page5 = create_page("page 5", template, language, published=True, in_navigation=True, parent=page1)
+        page6 = create_page("page 6", template, language, published=True, in_navigation=True, parent=page5)
+
+        # make sure the tree is as we've documented.
+        self.assertEqual([u'page 1', u'page 5'], [x.get_title() for x in page6.get_ancestors()])
+        self.assertEqual([u'page 1', u'page 2', u'page 3'], [x.get_title() for x in page4.get_ancestors()])
+
+        # These are the full set of available permissions. We exclusively want to test can_view.
+        view_perms = {
+            'can_change': False,
+            'can_add': False,
+            'can_delete': False,
+            'can_change_advanced_settings': False,
+            'can_publish': False,
+            'can_change_permissions': False,
+            'can_move_page': False,
+            'can_moderate': False,
+            'can_view': True,
+        }
+        perm_a, _ = PagePermission.objects.get_or_create(grant_on=ACCESS_PAGE_AND_DESCENDANTS, group=groups[0], page=page6, **view_perms)
+        perm_b, _ = PagePermission.objects.get_or_create(grant_on=ACCESS_PAGE_AND_CHILDREN, group=groups[2], page=page6, **view_perms)
+
+        # we've just added perm_a and perm_b to this page, so we would expect 2 results.
+        self.assertEqual(2, PagePermission.objects.for_page(page6).count())
+        # page 4 should be an entirely different set of permissions, as page 6 is not
+        # an ancestor, but is instead an ancestor's sibling.
+        self.assertEqual(0, PagePermission.objects.for_page(page4).count())
+        # doubly-verify by comparing the titles.
+        self.assertEqual([u'page 6', u'page 6'], [x.page.get_title() for x in PagePermission.objects.for_page(page4)])
+
+        # handle the two other descendent oriented choices.
+        pa.grant_on = ACCESS_DESCENDANTS
+        pa.save()
+        pc.grant_on = ACCESS_CHILDREN
+        pc.save()
+        # Same as previous asserts.
+        self.assertEqual(PagePermission.objects.for_page(page6).count(), 2)
+        self.assertEqual(PagePermission.objects.for_page(page4).count(), 0)
+
+        # the final one. The only one that works correctly is specifically current page only.
+        pa.grant_on = ACCESS_PAGE
+        pa.save()
+        pc.grant_on = ACCESS_PAGE
+        pc.save()
+        # is now correct.
+        self.assertEqual(PagePermission.objects.for_page(page6).count(), 2)
+        self.assertEqual(PagePermission.objects.for_page(page4).count(), 0)
