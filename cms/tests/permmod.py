@@ -984,12 +984,16 @@ class ViewPermissionTests(SettingsOverrideTestCase):
             self.assertTrue(page.has_view_permission(request))
 
     def test_view_permissions_inheritance(self):
-        ''' Demonstrate that a page cannot inherit from a parent's siblings. '''
+        ''' Demonstrate that a page cannot inherit from a parent's siblings.
+        The relevant ticket for this is #1113, which describes the issue that
+        in the 2.2.0 release, PagePermission.for_page doesn't provide enough
+        specificity to only get ancestor pages. '''
         template = "nav_playground.html"
         language = 'en'
         groups = []
         users = []
 
+        # We'll set up some test users and groups
         for g in ['A', 'B', 'C']:
             new_group, _ = Group.objects.get_or_create(name=g)
             new_user, _ = User.objects.get_or_create(username=g.lower())
@@ -1003,7 +1007,7 @@ class ViewPermissionTests(SettingsOverrideTestCase):
         # page 1
         #    page 2
         #        page 3
-        #            page 4 <-- We're going to find we have permissions here.
+        #            page 4 <-- We'll check this doesn't inherit page 6's perms.
         #    page 5
         #        page 6 <-- We'll add our permissions to this.
         page1 = create_page("page 1", template, language, published=True, in_navigation=True)
@@ -1012,6 +1016,13 @@ class ViewPermissionTests(SettingsOverrideTestCase):
         page4 = create_page("page 4", template, language, published=True, in_navigation=True, parent=page3)
         page5 = create_page("page 5", template, language, published=True, in_navigation=True, parent=page1)
         page6 = create_page("page 6", template, language, published=True, in_navigation=True, parent=page5)
+
+        # because results from create_page do not collect the correct ancestry
+        # but do have the correct .parents, we re-grab these two pages to check
+        # that the correct structure is in place. This is a function of mptt,
+        # rather than a limitation of the cms.api
+        page4 = Page.objects.get(pk=page4.pk)
+        page6 = Page.objects.get(pk=page6.pk)
 
         # make sure the tree is as we've documented.
         self.assertEqual([u'page 1', u'page 5'], [x.get_title() for x in page6.get_ancestors()])
@@ -1034,26 +1045,29 @@ class ViewPermissionTests(SettingsOverrideTestCase):
 
         # we've just added perm_a and perm_b to this page, so we would expect 2 results.
         self.assertEqual(2, PagePermission.objects.for_page(page6).count())
+        # make sure the permissions are both on page 6
+        self.assertEqual([u'page 6', u'page 6'], [x.page.get_title() for x in PagePermission.objects.for_page(page6)])
         # page 4 should be an entirely different set of permissions, as page 6 is not
         # an ancestor, but is instead an ancestor's sibling.
         self.assertEqual(0, PagePermission.objects.for_page(page4).count())
-        # doubly-verify by comparing the titles.
-        self.assertEqual([u'page 6', u'page 6'], [x.page.get_title() for x in PagePermission.objects.for_page(page4)])
+        self.assertEqual([], [x.page.get_title() for x in PagePermission.objects.for_page(page4)])
 
         # handle the two other descendent oriented choices.
         perm_a.grant_on = ACCESS_DESCENDANTS
         perm_a.save()
         perm_b.grant_on = ACCESS_CHILDREN
         perm_b.save()
-        # Same as previous asserts.
-        self.assertEqual(PagePermission.objects.for_page(page6).count(), 2)
-        self.assertEqual(PagePermission.objects.for_page(page4).count(), 0)
 
-        # the final one. The only one that works correctly is specifically current page only.
+        # Same as previous asserts.
+        self.assertEqual(2, PagePermission.objects.for_page(page6).count())
+        self.assertEqual(0, PagePermission.objects.for_page(page4).count())
+
+        # The final view restriction. In 2.2.0, this is the only reliable permission.
         perm_a.grant_on = ACCESS_PAGE
         perm_a.save()
         perm_b.grant_on = ACCESS_PAGE
         perm_b.save()
-        # is now correct.
-        self.assertEqual(PagePermission.objects.for_page(page6).count(), 2)
-        self.assertEqual(PagePermission.objects.for_page(page4).count(), 0)
+        # Again, page 4 should have no permissions related to page 6.
+        self.assertEqual(2, PagePermission.objects.for_page(page6).count())
+        self.assertEqual(0, PagePermission.objects.for_page(page4).count())
+
