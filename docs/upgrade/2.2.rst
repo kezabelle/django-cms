@@ -35,6 +35,11 @@ View permissions
 
 You can now give view permissions for django CMS pages to groups and users.
 
+.. warning::
+    In 2.2.0, view restrictions were able to get inherited from pages in the same
+    tree, even if they were not direct ancestors, if the permission allowed
+    access to descendants or children.
+
 ******************************
 Backwards incompatible changes
 ******************************
