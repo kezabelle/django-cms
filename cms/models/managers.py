@@ -343,12 +343,29 @@ class PagePermissionManager(BasicPagePermissionManager):
         """
         from cms.models import ACCESS_DESCENDANTS, ACCESS_CHILDREN,\
             ACCESS_PAGE_AND_CHILDREN, ACCESS_PAGE_AND_DESCENDANTS 
-        
-        q = Q(page__tree_id=page.tree_id) & (
-            Q(page=page) 
-            | (Q(page__level__lt=page.level)  & (Q(grant_on=ACCESS_DESCENDANTS) | Q(grant_on=ACCESS_PAGE_AND_DESCENDANTS)))
-            | (Q(page__level=page.level - 1) & (Q(grant_on=ACCESS_CHILDREN) | Q(grant_on=ACCESS_PAGE_AND_CHILDREN)))  
-        ) 
+        # tether the query to this page's tree_id (root node)
+        q_tree = Q(page__tree_id=page.tree_id)
+        # provide a filter for finding permissions of 'Current Page' (ACCESS_PAGE)
+        q_page = Q(page=page)
+        # Get all ancestors by performing the same query that page.get_ancestors()
+        # would produce, but avoids any potential penalty of that method doing a
+        # separate lookup against the DB.
+        # Note: Should the page's left or right be None, it falls back to 0.
+        # This is primarily to ensure the existing tests work.
+        left_right = {
+            'page__%s__lte' % page._meta.left_attr: getattr(page, page._meta.left_attr) or 0,
+            'page__%s__gte' % page._meta.right_attr: getattr(page, page._meta.right_attr) or 0,
+        }
+        q_parents = Q(**left_right)
+        # Find anything higher in the tree (lower level) which has granted
+        # access to descendants, or page & descendants.
+        q_desc = (Q(page__level__lt=page.level) & (Q(grant_on=ACCESS_DESCENDANTS) | Q(grant_on=ACCESS_PAGE_AND_DESCENDANTS)))
+        # Find any parent page (one level lower) which has granted access to
+        # direct children, or page & direct children.
+        q_kids = (Q(page__level=page.level - 1) & (Q(grant_on=ACCESS_CHILDREN) | Q(grant_on=ACCESS_PAGE_AND_CHILDREN)))
+        # assemble the complete set. Requires that permissions are in this tree,
+        # and are a direct ancestor. Then can be one of three permission types.
+        q = q_tree & q_parents & (q_page | q_desc | q_kids)
         return self.filter(q).order_by('page__level')
 
 class PagePermissionsPermissionManager(models.Manager):
